@@ -41,14 +41,15 @@
         const SUPABASE_ANON_KEY = 'sb_publishable_BHVlz-YQnX6Ahe4kB4Bj1g_ShT-iBK0';
         const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-        // ---------- Helpers ----------
+        //  Helpers 
         const $ = id => document.getElementById(id);
         const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
         const chips = arr => `<div class="chips">${(arr || []).map(t => `<span>${esc(t)}</span>`).join('')}</div>`;
         const meta = (...parts) => parts.filter(Boolean).map(esc).join(' · ');
+        // รูปของโปรเจกต์: ใช้ images (หลายรูป) ถ้าไม่มีให้ fallback ไป image_url เดิม
+        const imgs = p => p.images?.length ? p.images : (p.image_url ? [p.image_url] : []);
 
-        // ---------- Content definitions (one config drives list, form and CRUD) ----------
-        // field types: text | email | textarea | tags (comma list) | lines (one per line) | image
+        //   CRUD
         const ENTITIES = {
             projects: {
                 tab: 'Projects', single: 'Project', table: 'projects', order: 'created_at', min: '20rem',
@@ -57,11 +58,16 @@
                     { key: 'title', label: 'Title', type: 'text', required: true },
                     { key: 'description', label: 'Description', type: 'textarea', required: true },
                     { key: 'tags', label: 'Tags (comma separated)', type: 'tags', required: true, placeholder: 'Flutter, Machine Learning' },
-                    { key: 'image_url', label: 'Project Image', type: 'image' }
+                    { key: 'images', label: 'Project Images', type: 'images' }
                 ],
-                view: p => `
-                    ${p.image_url ? `<img src="${esc(p.image_url)}" alt="">` : '<div class="ph">No image</div>'}
-                    <h3>${esc(p.title)}</h3><p>${esc(p.description)}</p>${chips(p.tags)}`
+                view: p => {
+                    const g = imgs(p);
+                    return `
+                    ${g.length
+                        ? `<div class="cover"><img src="${esc(g[0])}" alt="">${g.length > 1 ? `<span class="badge">${g.length} photos</span>` : ''}</div>`
+                        : '<div class="ph">No image</div>'}
+                    <h3>${esc(p.title)}</h3><p>${esc(p.description)}</p>${chips(p.tags)}`;
+                }
             },
             skills: {
                 tab: 'Skills & Tools', single: 'Skill Category', table: 'skills', order: null, min: '16rem',
@@ -111,7 +117,7 @@
 
         const state = { tab: 'projects', rows: {}, profile: null, editing: null };
 
-        // ---------- Data ----------
+        //  Data 
         async function fetchAll({ table, order }) {
             let res = order
                 ? await sb.from(table).select('*').order(order, { ascending: false })
@@ -130,13 +136,13 @@
         }
 
         async function uploadImage(file) {
-            const name = `${Date.now()}.${file.name.split('.').pop()}`;
+            const name = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${file.name.split('.').pop()}`;
             const { error } = await sb.storage.from('project-images').upload(name, file);
             if (error) { alert('อัปโหลดรูปไม่สำเร็จ: ' + error.message); return null; }
             return sb.storage.from('project-images').getPublicUrl(name).data.publicUrl;
         }
 
-        // ---------- Form fields ----------
+        //  Form fields 
         const toInput = (f, v) => Array.isArray(v) ? v.join(f.type === 'lines' ? '\n' : ', ') : (v ?? '');
 
         function fromInput(f, value) {
@@ -145,16 +151,31 @@
             return value.trim();
         }
 
-        function fieldHtml(f, value = '', editing = false) {
+        //  Image gallery (state.editing.items: { url } เดิม | { file, url: preview } ใหม่) 
+        const galHtml = items => items.map((it, i) => `
+            <figure data-i="${i}">
+                <img src="${esc(it.url)}" alt="">
+                <button type="button" class="rm" data-rm aria-label="Remove image">&times;</button>
+                ${i === 0 ? '<em>Cover</em>' : '<button type="button" class="cv" data-cover>Set cover</button>'}
+            </figure>`).join('');
+
+        const renderGal = () => { $('modal-fields').querySelector('.gal').innerHTML = galHtml(state.editing.items); };
+
+        function fieldHtml(f, value = '') {
             const attrs = `name="${f.key}" ${f.required ? 'required' : ''} placeholder="${esc(f.placeholder || '')}"`;
             let input;
+            if (f.type === 'images') {
+                return `<div class="field"><span>${f.label}</span>
+                    <div class="gal">${galHtml(state.editing.items)}</div>
+                    <input type="file" accept="image/*" multiple>
+                    <small>เลือกได้หลายรูป · รูปแรกคือภาพปก กด "Set cover" เพื่อเปลี่ยน</small></div>`;
+            }
             if (f.type === 'textarea' || f.type === 'lines') input = `<textarea ${attrs} rows="3">${esc(value)}</textarea>`;
-            else if (f.type === 'image') input = `<input type="file" name="${f.key}" accept="image/*">${editing ? '<small>Leave empty to keep the current image.</small>' : ''}`;
             else input = `<input type="${f.type === 'email' ? 'email' : 'text'}" ${attrs} value="${esc(value)}">`;
             return `<label class="field"><span>${f.label}</span>${input}</label>`;
         }
 
-        // ---------- Rendering ----------
+        //  Rendering 
         function renderTabs() {
             const tabs = [...Object.entries(ENTITIES).map(([k, E]) => [k, E.tab]), ['profile', 'Profile & Contact']];
             $('tabs').innerHTML = tabs.map(([k, label], i) =>
@@ -212,18 +233,21 @@
             if (state.tab === name) renderPanel();
         }
 
-        // ---------- Modal (add / edit) ----------
+        //  Modal (add / edit) 
         function openForm(name, id) {
             const E = ENTITIES[name];
             const row = id ? state.rows[name].find(r => String(r.id) === String(id)) : null;
-            state.editing = { name, id: row?.id ?? null };
+            state.editing = { name, id: row?.id ?? null, items: row ? imgs(row).map(url => ({ url })) : [] };
             $('modal-title').textContent = `${row ? 'Edit' : 'Add'} ${E.single}`;
             $('modal-fields').innerHTML = E.fields.map(f =>
-                fieldHtml(f, toInput(f, row?.[f.key] ?? (f.alt && row?.[f.alt])), !!row)).join('');
+                fieldHtml(f, toInput(f, row?.[f.key] ?? (f.alt && row?.[f.alt])))).join('');
             $('modal').hidden = false;
         }
 
-        const closeModal = () => { $('modal').hidden = true; };
+        const closeModal = () => {
+            state.editing?.items.forEach(it => it.file && URL.revokeObjectURL(it.url));
+            $('modal').hidden = true;
+        };
 
         async function submitForm(e) {
             e.preventDefault();
@@ -235,14 +259,21 @@
             const data = {};
             for (const f of E.fields) {
                 const el = e.target.elements[f.key];
-                if (f.type !== 'image') { data[f.key] = fromInput(f, el.value); continue; }
-                if (!el.files[0]) continue; // no new file → keep existing image
-                const url = await uploadImage(el.files[0]);
-                if (!url) { btn.disabled = false; return; }
-                data[f.key] = url;
+                if (f.type !== 'images') { data[f.key] = fromInput(f, el.value); continue; }
+
+                // เรียงตามลำดับในแกลเลอรี: รูปเดิมใช้ URL เดิม, รูปใหม่อัปโหลดก่อน
+                const uploaded = await Promise.all(state.editing.items.map(it => it.file ? uploadImage(it.file) : it.url));
+                if (uploaded.includes(null)) { btn.disabled = false; return; }
+                data.images = uploaded;
+                data.image_url = data.images[0] ?? null; // คงคอลัมน์เดิมไว้เป็นภาพปก
             }
 
-            const ok = await save(E.table, id, data);
+            let ok = await save(E.table, id, data);
+            if (!ok && data.images) { // ตาราง projects ยังไม่มีคอลัมน์ images → บันทึกเฉพาะภาพปก
+                const { images, ...rest } = data;
+                ok = await save(E.table, id, rest);
+                if (ok) alert('ยังไม่มีคอลัมน์ "images" ใน Supabase จึงบันทึกได้เฉพาะรูปแรก — ดูวิธีเพิ่มคอลัมน์ได้จากคำแนะนำ');
+            }
             btn.disabled = false;
             if (!ok) return alert('บันทึกข้อมูลไม่สำเร็จ');
             closeModal();
@@ -264,7 +295,7 @@
             alert('บันทึกข้อมูลส่วนตัวเรียบร้อยแล้ว!');
         }
 
-        // ---------- Events ----------
+        //  Events 
         $('tabs').addEventListener('click', e => {
             const b = e.target.closest('[data-tab]');
             if (b) show(b.dataset.tab);
@@ -284,6 +315,26 @@
             if (e.target.id === 'profile-form') saveProfile(e.target);
         });
 
+        $('modal-fields').addEventListener('click', e => {
+            const b = e.target.closest('[data-rm], [data-cover]');
+            if (!b) return;
+            const { items } = state.editing;
+            const i = +b.closest('figure').dataset.i;
+            if (b.hasAttribute('data-rm')) {
+                const [it] = items.splice(i, 1);
+                if (it.file) URL.revokeObjectURL(it.url);
+            } else {
+                items.unshift(...items.splice(i, 1)); // ย้ายขึ้นเป็นรูปแรก = ภาพปก
+            }
+            renderGal();
+        });
+
+        $('modal-fields').addEventListener('change', e => {
+            if (e.target.type !== 'file') return;
+            for (const file of e.target.files) state.editing.items.push({ file, url: URL.createObjectURL(file) });
+            e.target.value = '';
+            renderGal();
+        });
         $('form').addEventListener('submit', submitForm);
         $('modal-cancel').addEventListener('click', closeModal);
         $('modal').addEventListener('click', e => { if (e.target.id === 'modal') closeModal(); });

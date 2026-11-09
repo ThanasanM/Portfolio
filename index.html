@@ -86,6 +86,21 @@
         </div>
     </section>
 
+    <!-- Image popup (hover preview / full viewer) -->
+    <div class="lb" id="lb" role="dialog" aria-modal="true" aria-label="Project preview">
+        <button class="lb-x" aria-label="Close" onclick="lbClose()">&times;</button>
+        <button class="lb-nav prev" data-d="-1" aria-label="Previous image">&#8249;</button>
+        <button class="lb-nav next" data-d="1" aria-label="Next image">&#8250;</button>
+        <figure class="lb-box">
+            <img id="lb-img" alt="">
+            <figcaption>
+                <span id="lb-count"></span>
+                <h3 id="lb-title"></h3>
+                <p id="lb-desc"></p>
+            </figcaption>
+        </figure>
+    </div>
+
     <footer class="foot">© <span id="year"></span> <span id="foot-name"></span></footer>
 
     <script src="supabase.js"></script>
@@ -119,15 +134,22 @@
                     ${d.description ? `<p>${esc(d.description)}</p>` : ''}
                 </article>`,
 
-            project: p => `
+            project: p => {
+                const g = p.images?.length ? p.images : (p.image_url ? [p.image_url] : []);
+                return `
                 <article class="card reveal">
-                    <div class="thumb ${p.image_url ? '' : 'ph'}">
-                        ${p.image_url ? `<img src="${esc(p.image_url)}" alt="${esc(p.title)}" loading="lazy">` : 'No image'}
+                    <div class="thumb ${g.length ? '' : 'ph'}">
+                        ${g.length ? `<div class="slides">${g.map(u => `<img src="${esc(u)}" alt="${esc(p.title)}" loading="lazy">`).join('')}</div>` : 'No image'}
+                        ${g.length > 1 ? `
+                        <button class="arrow prev" data-dir="-1" aria-label="Previous image">&#8249;</button>
+                        <button class="arrow next" data-dir="1" aria-label="Next image">&#8250;</button>
+                        <span class="count">1 / ${g.length}</span>` : ''}
                     </div>
                     <h3>${esc(p.title)}</h3>
                     <p>${esc(p.description)}</p>
                     <div class="tags">${(p.tags || []).map(t => `<span>${esc(t)}</span>`).join('')}</div>
-                </article>`
+                </article>`;
+            }
         };
 
         // ---------- Profile ----------
@@ -156,6 +178,87 @@
         const nav = document.querySelector('.nav');
         const onScroll = () => nav.classList.toggle('solid', scrollY > 40);
         addEventListener('scroll', onScroll, { passive: true });
+
+        // ---------- Project image carousel ----------
+        const list = $('projects-list');
+        const slideIndex = s => Math.round(s.scrollLeft / s.clientWidth);
+
+        // ---------- Popup viewer: hover = พรีวิวขยาย, คลิก = เปิดเต็ม (เลื่อนดูทุกรูปได้) ----------
+        const lb = $('lb');
+        let cur = null, timer;
+
+        function lbSet(i) {
+            cur.i = (i + cur.urls.length) % cur.urls.length;
+            $('lb-img').src = cur.urls[cur.i];
+            $('lb-count').textContent = cur.urls.length > 1 ? `${cur.i + 1} / ${cur.urls.length}` : '';
+        }
+
+        function lbOpen(card, mode) {
+            const slides = card.querySelector('.slides');
+            cur = { slides, urls: [...slides.children].map(img => img.src), i: 0 };
+            $('lb-title').textContent = card.querySelector('h3').textContent;
+            $('lb-desc').textContent = card.querySelector('p').textContent;
+            lb.classList.toggle('multi', cur.urls.length > 1);
+            lb.classList.remove('peek', 'open');
+            lb.classList.add('on', mode);
+            document.body.style.overflow = mode === 'open' ? 'hidden' : '';
+            lbSet(slideIndex(slides));
+        }
+
+        function lbClose() {
+            lb.classList.remove('on', 'peek', 'open');
+            document.body.style.overflow = '';
+            cur = null;
+        }
+
+        const canHover = matchMedia('(hover: hover)').matches;
+
+        list.addEventListener('mouseover', e => {
+            const t = e.target.closest('.thumb:not(.ph)');
+            if (!canHover || !t || t.contains(e.relatedTarget) || lb.classList.contains('open')) return;
+            clearTimeout(timer);
+            timer = setTimeout(() => lbOpen(t.closest('.card'), 'peek'), 180);
+        });
+
+        list.addEventListener('mouseout', e => {
+            const t = e.target.closest('.thumb');
+            if (!t || t.contains(e.relatedTarget)) return;
+            clearTimeout(timer);
+            if (lb.classList.contains('peek')) lbClose();
+        });
+
+        list.addEventListener('click', e => {
+            const b = e.target.closest('.arrow');
+            if (b) {
+                const s = b.parentElement.querySelector('.slides');
+                s.scrollBy({ left: s.clientWidth * b.dataset.dir, behavior: 'smooth' });
+                return;
+            }
+            const t = e.target.closest('.thumb:not(.ph)');
+            if (t) { clearTimeout(timer); lbOpen(t.closest('.card'), 'open'); }
+        });
+
+        list.addEventListener('scroll', e => {
+            const s = e.target;
+            if (!s.classList?.contains('slides')) return;
+            const i = slideIndex(s);
+            s.parentElement.querySelector('.count').textContent = `${i + 1} / ${s.children.length}`;
+            if (cur?.slides === s && lb.classList.contains('peek')) lbSet(i); // พรีวิวตามสไลด์ที่เลื่อน
+        }, true);
+
+        lb.addEventListener('click', e => {
+            if (!lb.classList.contains('open')) return;
+            const n = e.target.closest('.lb-nav');
+            if (n) lbSet(cur.i + +n.dataset.d);
+            else if (!e.target.closest('.lb-box')) lbClose();
+        });
+
+        addEventListener('keydown', e => {
+            if (!lb.classList.contains('open')) return;
+            if (e.key === 'Escape') lbClose();
+            else if (e.key === 'ArrowLeft') lbSet(cur.i - 1);
+            else if (e.key === 'ArrowRight') lbSet(cur.i + 1);
+        });
 
         // ---------- Boot ----------
         (async () => {
